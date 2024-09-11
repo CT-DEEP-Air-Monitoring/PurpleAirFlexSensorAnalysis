@@ -1,0 +1,642 @@
+---
+title: "![](DEEP_Header.png){out.width=1300px}"
+date: "<i> Report Created: `r format(Sys.Date(), '%B %Y')`</i>"
+output:
+  html_document:
+    css: "style.css"
+    toc: true
+    toc_float: true
+    toc_depth: 3
+    toccolor: black
+    theme: lumen
+---
+
+```{r setup, include=FALSE} 
+knitr::opts_chunk$set(
+  comment = '', fig.width = 11, fig.height = 7, warning= FALSE, message = FALSE, fig.align ="left")
+```
+
+```{r LIBRARY,include=FALSE}
+#Check at line 47-49 for to change directory to match your file path before running!!
+
+#Install packages if not done already 
+#install.packages("dplyr")
+#install.packages("lubridate")
+#install.packages("plotly")
+#install.packages("tidyverse")
+#install.packages("htmlwidgets")
+#install.packages("htmltools")
+#install.packages("gt")
+#install.packages("padr")
+#install.packages("zoo")
+#install.packages("magrittr")
+library(dplyr)
+library(lubridate)
+library(plotly)
+library(tidyverse)
+library(htmlwidgets)
+library(htmltools)
+library(gt)
+library(padr)
+library(zoo)
+library(magrittr)
+library(reshape2)
+```
+
+```{r format, echo=FALSE}
+setwd("P:/Community Monitoring/Working/PurpleAir/PurpleAirFlex/Data_Files/")
+dir <- "P:/Community Monitoring/Working/PurpleAir/PurpleAirFlex"
+dir_files <-"P:/Community Monitoring/Working/PurpleAir/PurpleAirFlex/Data_Files"
+
+#listing all files
+all_files <- list.dirs(path = dir_files, full.names = TRUE)
+
+#This is listing all the files, I like doing this so you can just keep adding files to the folder, basically all PA files need to have "Purple_Air" in the file name
+PA_files <- list.files(path = all_files, pattern = "PurpleAir")
+PA_list <- lapply(PA_files, read.csv)
+
+#binding the rows!
+PA <- bind_rows(PA_list)
+
+#Timestamp
+PA$time_stamp <- as.numeric(PA$time_stamp)
+PA$time_stamp <- as.POSIXct(PA$time_stamp)
+
+#Pulls only data with reference monitors
+PA <- subset(PA, PA$reference_monitor == 'Yes' ) 
+PA <- PA[c("time_stamp", "sensor_index", "name_on_map", "humidity", "temperature",
+           "pm2.5_atm_a", "pm2.5_atm_b")]
+PA$humidityna <- as.numeric(PA$humidity)
+PA$humidity <- NULL
+
+#Substituting null RH values with 55, so this will allow the correction to be done when an RH is missing but has a PM value
+#Not positive if this is right and might have to be a condition in the actually equation 
+PA$humidity[is.na(PA$humidityna)] <- 55
+
+#Finds the average between the two columns, but if one value is greater than 1000, it just chooses the other column
+PA <- PA %>%
+  mutate(
+    atm_avg = if_else(pm2.5_atm_a > 1000 | PA$pm2.5_atm_b > 1000, 
+                      if_else(pm2.5_atm_a > 1000, PA$pm2.5_atm_b, pm2.5_atm_a), 
+                      (pm2.5_atm_a + PA$pm2.5_atm_b) / 2)
+  )
+
+
+#making epa correction columns
+PA$cf_30 <- ((0.524*PA$atm_avg) -(0.0862*PA$humidity)+5.75)
+PA$cf_30_50 <- (((0.786 * ((PA$atm_avg/20) - (3/2)) + 0.524 * 
+                    (1 - ((PA$atm_avg/20) - (3/2)))) * PA$atm_avg) - 
+                  (0.0862 * PA$humidity) + 5.75)
+PA$cf_50_210 <- ((0.786*PA$atm_avg)-(0.0862*PA$humidity)+5.75)
+PA$cf_210_260 <- ((0.69 * ((PA$atm_avg/50) - (21/5)) + 0.786 * (1 - ((PA$atm_avg/50) - (21/5)))) * PA$atm_avg) - 
+  (0.0862 * PA$humidity * (1 - ((PA$atm_avg/50) - (21/5)))) + (2.966 * ((PA$atm_avg/50) - (21/5))) + 
+  (5.75 * (1 - ((PA$atm_avg/50) - (21/5)))) + 
+  (8.84 * 10^(-4) * PA$atm_avg^2 * ((PA$atm_avg/50) - (21/5)))
+PA$cf_260 <- (2.966+(0.69*PA$atm_avg)+(8.84*10^(-4)*PA$atm_avg^2))
+
+#final correction column with selected equation
+PA$cf_final <- NA
+
+for (i in 1:nrow(PA)) {
+  value <- PA$atm_avg[i]  #get the value in atm_avg for the current row
+  
+  #check the value against the bins
+  if (value < 30) {
+    PA$cf_final[i] <- PA$cf_30[i]
+  } else if (value >= 30 && value < 50) {
+    PA$cf_final[i] <- PA$cf_30_50[i]
+  } else if (value >= 50 && value < 210) {
+    PA$cf_final[i] <- PA$cf_50_210[i]
+  } else if (value >= 210 && value < 260) {
+    PA$cf_final[i] <- PA$cf_210_260[i]
+  } else {
+    PA$cf_final[i] <- PA$cf_260[i]
+  }
+}
+
+#pulling only the needed columns 
+PA_data <- PA[c("time_stamp", "name_on_map", "cf_final", "humidityna", "temperature")]
+names(PA_data)[4] <- "humidity"
+
+#Now only pulling East Hartford data
+PA_EH <- subset(PA_data, name_on_map =="East Hartford CTDEEP")
+#collo data
+PA_collo <- subset(PA_data, name_on_map =="East Hartford- collo CTDEEP")
+
+#renaming the column and removing name
+names(PA_EH)[3]<- "PurpleAir25"
+names(PA_EH)[4]<- "PurpleAirRH"
+names(PA_EH)[5]<- "PurpleAirTemp"
+PA_EH[2]<- NULL
+PA_EH <- pad(PA_EH)
+
+#renaming the column and removing name
+names(PA_collo)[3]<- "PurpleAirFlex25"
+names(PA_collo)[4]<- "PurpleAirFlexRH"
+names(PA_collo)[5]<- "PurpleAirFlexTemp"
+PA_collo[2]<- NULL
+PA_collo <- pad(PA_collo)
+
+#merging the data!
+PA_all <- merge(PA_collo, PA_EH, by = "time_stamp", all.x = TRUE)
+names(PA_all)[1] <- "Date_Time"
+PA_all$Date_Time <- as.character(format(PA_all$Date_Time))
+
+#changing to celcius
+PA_all$PurpleAirTemp <- as.numeric(PA_all$PurpleAirTemp)
+PA_all$PurpleAirTemp <- ((PA_all$PurpleAirTemp - 32) * 5/9)
+PA_all$PurpleAirFlexTemp <- as.numeric(PA_all$PurpleAirFlexTemp)
+PA_all$PurpleAirFlexTemp <- ((PA_all$PurpleAirFlexTemp - 32) * 5/9)
+
+#reference data, just the date cutoffs you want
+#download the csv from Envista and open, delete summary 
+EH_files <- list.files(path = all_files, pattern = "East", full.names = TRUE)
+EH_list <- lapply(EH_files, read.csv, skip = 2)
+
+for (i in 1:length(EH_list )){
+  #removing that random row that isnt needed
+  EH_list[[i]] <- EH_list[[i]][-c(1),]
+}
+EH <- bind_rows(EH_list)
+
+#Timestamp
+EH$Date_Time <- as.POSIXct(EH$Date...Time, format = "%m/%d/%Y %H:%M", TZ= "UTC")
+EH <- pad(EH)
+EH$Date_Time <- as.character(format(EH$Date_Time))
+EH <- EH[,-1]
+names(EH)[1] <- "Temp"
+
+#merging everything!
+all <- merge(EH, PA_all, by = "Date_Time", all.x = TRUE)
+
+#Changing T640 to numeric, just adds NA to the invalid data codes
+all$T640_PM25 <- as.numeric(all$T640_PM25)
+
+#Writing a csv for all data, this is what will be downloadable on rmarkdown
+write.csv(all, paste0(dir, "/CT_EH_PurpleAirData.csv"), row.names=FALSE, na= " ")
+
+#Separating by datatype
+PM <- all[,c("Date_Time", "T640_PM25", "PurpleAir25","PurpleAirFlex25")]
+names(PM) <- c("Date_Time", "EH", "PA", "PAF")
+PM$Data_Type <- "PM\u2082.\u2085"
+PM$units <- "(µg/m³)"
+Temp <- all[,c("Date_Time", "Temp", "PurpleAirTemp","PurpleAirFlexTemp")] 
+names(Temp) <- c("Date_Time", "EH", "PA", "PAF")
+Temp$Data_Type <- "Temperature"
+Temp$units <- "(°C)"
+RH <- all[,c("Date_Time", "RH", "PurpleAirRH","PurpleAirFlexRH")] 
+names(RH) <- c("Date_Time", "EH", "PA", "PAF")
+RH$Data_Type <- "Relative Humidity"
+RH$units <- "(%)"
+
+#binding together 
+all_bind <- rbind(PM, Temp, RH)
+
+#This adds the quarter an year, but I dont like the format so also changing that
+all_bind$Quarter <- as.yearqtr(all_bind$Date_Time, format = "%Y-%m-%d")
+all_bind$Quarter <- format(all_bind$Quarter, format = "%q")
+
+#making sure everything is numeric so it will graph
+all_bind$EH <- as.numeric(all_bind$EH)
+all_bind$PA <- as.numeric(all_bind$PA)
+all_bind$PAF <- as.numeric(all_bind$PAF)
+
+
+```
+
+```{r csv link, echo=FALSE}
+#This is how the csv is inserted as a link, then is added to the text below
+readBin("CT_EH_PurpleAirData.csv", "raw", file.info("CT_EH_PurpleAirData.csv")$size) %>% 
+  openssl::base64_encode() -> encoded
+```
+
+A PurpleAir Classic and a PurpleAir Flex air quality monitoring sensor were installed at a monitoring site in East Hartford, Connecticut to evaluate the sensors performance tracking PM~2.5~ data. PurpleAir data was corrected using the extended U.S-wide correction equation developed by the EPA to reduce bias in sensor data (more information found here: [AirNow](https://document.airnow.gov/airnow-fire-and-smoke-map-questions-and-answers.pdf)). Hourly data from 2023 was then compared to a T640 reference monitor located at the same location. The full dataset used can be downloaded here <a download="CT_EH_PurpleAirData.csv" href="`r sprintf('data:text/csv;base64,%s', encoded)`">Download CSV</a>.
+
+# Sensor Details 
+## PurpleAir Specifications 
+
+<table border="2" style="border-collapse: collapse; border-color: black;">
+<tr style="background-color: #0D2C6C; color: white; text-align: left; border: 1px solid black;">
+<td style="border: 1px solid black; padding: 8px;" ><b>Sensor Type</td>
+<td style="border: 1px solid black; padding: 8px;"><b>Cost</td>
+<td style="border: 1px solid black; padding: 8px;"><b>Differences</td>
+<td style="border: 1px solid black; padding: 8px;"><b>Possible Configuration</td>
+<td style="border: 1px solid black; padding: 8px;"><b>Evaluated Configuration</td>
+<td style="border: 1px solid black; padding: 8px;"><b>Data Access</td>
+<td style="border: 1px solid black; padding: 8px;"><b>Power Supply</td>
+<td style="border: 1px solid black; padding: 8px;"><b>Considerations</td>
+<td style="border: 1px solid black; padding: 8px;"><b>Reference Monitor Compared</b></td>
+</tr>
+</tr>
+<tr style= "background-color: #white; color: black;border: 1px solid black;">
+<td style="border: 1px solid black; padding: 8px; vertical-align:top;"><b> PurpleAir Classic </b>
+</td>
+<td style="border: 1px solid black; padding: 8px; vertical-align:top;"> $229 
+</td>
+<td style="border: 1px solid black; padding: 8px; vertical-align:top;">  Micro SD card included
+</td>
+<td rowspan = "2" style="border: 1px solid black; padding: 8px; vertical-align:top;"> PM~2.5~, Temperature, Relative Humidity, Pressure 
+</td>
+<td rowspan = "2" style="border: 1px solid black; padding: 8px; vertical-align:top;"> PM~2.5~, Temperature, Relative Humidity 
+</td>
+<td rowspan = "2" style="border: 1px solid black; padding: 8px; vertical-align:top;"> Micro SD card, WiFi connectivity, API download and live public online map
+</td>
+<td rowspan = "2" style="border: 1px solid black; padding: 8px; vertical-align:top;"> Potted 5V USB outdoor power supply 12 ft mains plug (purchased separately-$40)
+</td>
+<td rowspan = "2" style="border: 1px solid black; padding: 8px; vertical-align:top;"> -Effected by saltwater (issues with coastal use) <br> -Life Expectancy ~2 years 
+</td>
+<td rowspan = "2" style="border: 1px solid black; padding: 8px; vertical-align:top;"> <b> PM~2.5~: </b> Teledyne API T640X
+<br>
+<b> Temp & RH: </b> AutoMet 580
+</td>
+</tr>
+</tr>
+<tr style="background-color: #white; color: black; border: 1px solid black; padding: 8px;">
+<td style="border: 1px solid black;padding: 8px; vertical-align:top;"><b> PurpleAir Flex</b>
+</td>
+<td style="border: 1px solid black; padding: 8px; vertical-align:top;"> $289
+</td>
+<td style="border: 1px solid black; padding: 8px; vertical-align:top;"> LED light display with AQI color
+</td>
+</tr>
+</table>
+
+
+## Setup
+```{r, echo = FALSE, out.width = '110%', out.height= '110%', fig.show = 'hold', fig.align = 'left', fig.cap='PurpleAir Classic (left) and PurpleAir Flex (right) air quality monitor.'}
+#adding the image 
+knitr::include_graphics(c("PurpleAir.png"))
+```
+
+<br>
+```{r timeseries, results = 'asis', echo = FALSE}
+#This makes a list of timeseries plots with two loops, first through the quarter/year then through datatype
+#Output is a timeseries graph for each quarter/year for each measurement 
+timeseries = list()
+idx <- 1
+for (i in unique(all_bind$Quarter)){
+  
+  i_all <- subset(all_bind, all_bind$Quarter==i)
+  
+for (j in unique(i_all$Data_Type)){
+  
+  j_all <- subset(i_all, i_all$Data_Type==j)
+  
+   plot_name <- paste0("Q_", i, "_", j)
+
+  timeseries[[plot_name]] <- plot_ly(data= j_all, x = ~Date_Time) %>%
+    add_lines(y = ~EH, name = "Reference", line = list(color = "black"), opacity = 0.9) %>%
+    add_lines(y = ~PA, name = "PurpleAir Classic", line = list(color = "darkgreen"), opacity = 0.6) %>%
+      add_lines(y = ~PAF, name = "PurpleAir Flex", line = list(color = "blue"), opacity = 0.5) %>%
+    layout(title = list(text = paste0("PurpleAir Sensor: ", unique(j_all$Data_Type)," Comparision",
+                                      "<br>",
+                                      "<sup>", 
+                                       "Quarter ", unique(i_all$Quarter),  "<sup>")),
+           legend = list(orientation = 'h', title=list(text="Monitor Type:")), 
+           xaxis = list(title = " ",
+                        type = 'date',
+                        tickformat = "%B %d <br>%Y"),
+           annotations = list(x = 0.60, y = -0.17, text = paste0("<i> </i>"), 
+      showarrow = F, xref='paper', yref='paper', 
+      xanchor='right', yanchor='auto', xshift=0, yshift=0,
+      font=list(size=12, color="grey")),
+           yaxis = list(title = paste0(unique(j_all$Data_Type), " ", unique(j_all$units)), rangemode = 'tozero'))
+  idx <- idx + 1
+
+}}
+```
+
+# Timeseries Comparison
+
+PurpleAir Classic and PurpleAir Flex hourly data for PM~2.5~, temperature and relative humidity were compared by quarter to reference values (Q1: January-March, Q2: April-June, Q3: July-September, Q4: October-December).
+
+## PM~2.5~ {.tabset .tabset-fade .tabset-pills}
+### Quarter 1
+```{r, results = 'asis', echo = FALSE}
+timeseries[['Q_1_PM₂.₅']]
+```
+### Quarter 2
+```{r, results = 'asis', echo = FALSE}
+timeseries[['Q_2_PM₂.₅']]
+```
+### Quarter 3
+```{r, results = 'asis', echo = FALSE}
+timeseries[['Q_3_PM₂.₅']]
+```
+### Quarter 4
+```{r, results = 'asis', echo = FALSE}
+timeseries[['Q_4_PM₂.₅']]
+```
+
+## Temperature {.tabset .tabset-fade .tabset-pills}
+### Quarter 1
+```{r, results = 'asis', echo = FALSE}
+timeseries[['Q_1_Temperature']]
+```
+### Quarter 2
+```{r, results = 'asis', echo = FALSE}
+timeseries[['Q_2_Temperature']]
+```
+### Quarter 3
+```{r, results = 'asis', echo = FALSE}
+timeseries[['Q_3_Temperature']]
+```
+### Quarter 4
+```{r, results = 'asis', echo = FALSE}
+timeseries[['Q_4_Temperature']]
+```
+
+## Relative Humidity {.tabset .tabset-fade .tabset-pills}
+### Quarter 1
+```{r, results = 'asis', echo = FALSE}
+timeseries[['Q_1_Relative Humidity']]
+```
+### Quarter 2
+```{r, results = 'asis', echo = FALSE}
+timeseries[['Q_2_Relative Humidity']]
+```
+### Quarter 3
+```{r, results = 'asis', echo = FALSE}
+timeseries[['Q_3_Relative Humidity']]
+```
+### Quarter 4
+```{r, results = 'asis', echo = FALSE}
+timeseries[['Q_4_Relative Humidity']]
+```
+
+
+```{r, results = 'asis', echo = FALSE}
+#correlation plot
+#Removing nas for this one because correlation plots wont just ignore them
+all_corr <- na.omit(all_bind)
+correlation1 <- tagList()
+idx <- 1
+for (i in unique(all_corr$Data_Type)){
+  
+  i_all <- subset(all_corr, all_corr$Data_Type==i)
+
+  lm_calc <- lm(i_all$PA ~ i_all$EH)
+  slope <- coef(lm_calc)[2]
+  y <- coef(lm_calc)[1]
+  r <- summary(lm_calc)$r.squared
+  
+corrplot_name <- paste0("PA_EH_", i)
+  
+correlation1[[corrplot_name]] <-plot_ly(data = i_all) %>% 
+  add_markers(x = i_all$EH, y = i_all$PA, name = " ", marker = list(color = "lightsteelblue",
+                                                                            line = list(color = "#0D2C6C",width = 1.3))) %>%
+  add_lines(x = i_all$EH, y = fitted(lm(i_all$PA ~ i_all$EH)),name = " ", line=list(color = "black", width= 1)) %>%
+  layout(showlegend = F, 
+         title = list(text = paste0("PurpleAir Classic and Reference Sensor: ", 
+                                                   unique(i_all$Data_Type)," Correlation ", unique(i_all$units), "<br>",
+                                                   "<sup>", "y=", round(slope, 3), "x + ", round(y,3), "  ", "R\u00b2", "=", round(r,3),"<sup>")),
+         annotations = list(x = 0.60, y = -0.07, text = paste0("<i> </i>"), 
+      showarrow = F, xref='paper', yref='paper', 
+      xanchor='right', yanchor='auto', xshift=0, yshift=0,
+      font=list(size=12, color="grey")),
+         xaxis = list(title = "Reference", rangemode = 'tozero'), 
+         yaxis = list(title = "PurpleAir Classic", rangemode = 'tozero'))
+idx <- idx + 1
+}
+
+```
+# Correlation Comparison
+## PurpleAir Classic and Reference Correlation {.tabset .tabset-fade .tabset-pills}
+### PM~2.5~
+```{r, results = 'asis', echo = FALSE}
+correlation1[["PA_EH_PM₂.₅"]]
+```
+
+### Temperature 
+```{r, results = 'asis', echo = FALSE}
+correlation1[["PA_EH_Temperature"]]
+```
+
+### Relative Humidity  
+```{r, results = 'asis', echo = FALSE}
+correlation1[["PA_EH_Relative Humidity"]]
+```
+
+```{r, results = 'asis', echo = FALSE}
+#correlation plot
+correlation2 <- tagList()
+idx <- 1
+for (i in unique(all_corr$Data_Type)){
+  
+  i_all <- subset(all_corr, all_corr$Data_Type==i)
+
+  lm_calc <- lm(i_all$PAF ~ i_all$EH)
+  slope <- coef(lm_calc)[2]
+  y <- coef(lm_calc)[1]
+  r <- summary(lm_calc)$r.squared
+  
+corrplot_name <- paste0("PAF_EH_", i)
+  
+correlation2[[corrplot_name]] <-plot_ly(data = i_all) %>% 
+  add_markers(x = i_all$EH, y = i_all$PAF, name = " ", marker = list(color = "lightsteelblue",
+                                                                            line = list(color = "#0D2C6C",width = 1.3))) %>%
+  add_lines(x = i_all$EH, y = fitted(lm(i_all$PAF ~ i_all$EH)),name = " ", line=list(color = "black", width= 1)) %>%
+  layout(showlegend = F, 
+         title = list(text = paste0("PurpleAir Flex and Reference Sensor: ", 
+                                                   unique(i_all$Data_Type)," Correlation ", unique(i_all$units), "<br>",
+                                                   "<sup>", "y=", round(slope, 3), "x + ", round(y,3), "  ", "R\u00b2", "=", round(r,3),"<sup>")),
+         annotations = list(x = 0.60, y = -0.07, text = paste0("<i> </i>"), 
+      showarrow = F, xref='paper', yref='paper', 
+      xanchor='right', yanchor='auto', xshift=0, yshift=0,
+      font=list(size=12, color="grey")),
+         xaxis = list(title = "Reference", rangemode = 'tozero'), 
+         yaxis = list(title = "PurpleAir Flex", rangemode = 'tozero'))
+idx <- idx + 1
+}
+
+```
+
+## PurpleAir Flex and Reference Correlation {.tabset .tabset-fade .tabset-pills}
+### PM~2.5~
+```{r, results = 'asis', echo = FALSE}
+correlation2[["PAF_EH_PM₂.₅"]]
+```
+
+### Temperature 
+```{r, results = 'asis', echo = FALSE}
+correlation2[["PAF_EH_Temperature"]]
+```
+
+### Relative Humidity  
+```{r, results = 'asis', echo = FALSE}
+correlation2[["PAF_EH_Relative Humidity"]]
+```
+
+```{r, results = 'asis', echo = FALSE}
+#correlation plot
+correlation3 <- tagList()
+idx <- 1
+for (i in unique(all_corr$Data_Type)){
+  
+  i_all <- subset(all_corr, all_corr$Data_Type==i)
+
+  lm_calc <- lm(i_all$PA ~ i_all$PAF)
+  slope <- coef(lm_calc)[2]
+  y <- coef(lm_calc)[1]
+  r <- summary(lm_calc)$r.squared
+  
+corrplot_name <- paste0("PA_PAF_", i)
+  
+correlation3[[corrplot_name]] <-plot_ly(data = i_all) %>% 
+  add_markers(x = i_all$PA, y = i_all$PAF, name = " ", marker = list(color = "lightsteelblue",
+                                                                            line = list(color = "#0D2C6C",width = 1.3))) %>%
+  add_lines(x = i_all$PA, y = fitted(lm(i_all$PAF ~ i_all$PA)),name = " ", line=list(color = "black", width= 1)) %>%
+  layout(showlegend = F, 
+         title = list(text = paste0("PurpleAir Classic and PurpleAir Flex Sensor: ", 
+                                                   unique(i_all$Data_Type)," Correlation ", unique(i_all$units), "<br>",
+                                                   "<sup>", "y=", round(slope, 3), "x + ", round(y,3), "  ", "R\u00b2", "=", round(r,3),"<sup>")),
+         annotations = list(x = 0.60, y = -0.07, text = paste0("<i> </i>"), 
+      showarrow = F, xref='paper', yref='paper', 
+      xanchor='right', yanchor='auto', xshift=0, yshift=0,
+      font=list(size=12, color="grey")),
+         xaxis = list(title = "PurpleAir Classic", rangemode = 'tozero'), 
+         yaxis = list(title = "PurpleAir Flex", rangemode = 'tozero'))
+idx <- idx + 1
+}
+
+```
+
+## PurpleAir Classic and PurpleAir Flex {.tabset .tabset-fade .tabset-pills}
+### PM~2.5~ 
+```{r, results = 'asis', echo = FALSE}
+correlation3[["PA_PAF_PM₂.₅"]]
+```
+
+### Temperature 
+```{r, results = 'asis', echo = FALSE}
+correlation3[["PA_PAF_Temperature"]]
+```
+
+### Relative Humidity  
+```{r, results = 'asis', echo = FALSE}
+correlation3[["PA_PAF_Relative Humidity"]]
+```
+
+```{r, echo=FALSE, results = 'asis'}
+#Setting up table
+  PA_EHT <- do.call(rbind, lapply(unique(all_corr$Data_Type), function(d) {
+    PA_EHT_model <- lm(PA ~ EH, data = all_corr[all_corr$Data_Type == d,])
+    data.frame(Data_Type = d, Intercept = coef(PA_EHT_model)[1],
+               Slope = coef(PA_EHT_model)[2], r_squared = summary(PA_EHT_model)$r.squared,
+               row.names = NULL)
+  }))
+  PA_EHT$Sensor <- "PA_EH"
+  
+#calculation for Purple Air Flex
+  PAF_EHT <- do.call(rbind, lapply(unique(all_corr$Data_Type), function(d) {
+    PAF_EHT_model <- lm(PAF ~ EH, data = all_corr[all_corr$Data_Type == d,])
+    data.frame(Data_Type = d, Intercept = coef( PAF_EHT_model)[1],
+               Slope = coef( PAF_EHT_model)[2], r_squared = summary( PAF_EHT_model)$r.squared,
+               row.names = NULL)
+  }))
+  PAF_EHT$Sensor <- "PAF_EH"
+
+#Purple Air vs PAF
+  PAF_PA <- do.call(rbind, lapply(unique(all_corr$Data_Type), function(d) {
+    PAF_PA_model <- lm(PAF ~ PA, data = all_corr[all_corr$Data_Type == d,])
+    data.frame(Data_Type = d, Intercept = coef( PAF_PA_model)[1],
+               Slope = coef( PAF_PA_model)[2], r_squared = summary( PAF_PA_model)$r.squared,
+               row.names = NULL)
+  }))
+  PAF_PA$Sensor <- "PAF_PA"
+
+  #binding them for the table!
+  table <- rbind(PA_EHT, PAF_EHT, PAF_PA)
+  
+#Root mean square error
+ rmse1 <- all_corr %>%
+  group_by(Data_Type) %>%
+ summarize(
+    RMSE = sqrt(mean((EH - PA)^2)))
+ rmse1$Sensor <- "PA_EH"
+  
+  rmse2 <- all_corr %>%
+  group_by(Data_Type) %>%
+ summarize(
+    RMSE = sqrt(mean((EH - PAF)^2)))
+  rmse2$Sensor <- "PAF_EH"
+  
+  rmse3 <- all_corr %>%
+  group_by(Data_Type) %>%
+ summarize(
+    RMSE = sqrt(mean((PA - PAF)^2)))
+  rmse3$Sensor <- "PAF_PA"
+  
+  #binding them for the table!
+  rmse <- rbind(rmse1, rmse2, rmse3)
+  table <- merge(table, rmse, by=c("Sensor", "Data_Type"))
+  table <- table %>% mutate(across(where(is.numeric), ~ round(., 2)))
+  
+#Finding the na percent
+  PA_na <- all_bind %>%
+  group_by(Data_Type) %>%
+  summarise(
+    total = n(),
+    na_count = sum(is.na(PA)),
+    na_percent = (na_count / total) * 100
+  )
+  PA_na$na <- 100 - PA_na$na_percent
+  PA_na <- PA_na[c("Data_Type", "na")]
+  names(PA_na)[2] <- "Data Completeness (%)"
+  PA_na$Sensor <- "PA_EH"
+    
+  PAF_na <- all_bind %>%
+  group_by(Data_Type) %>%
+  summarise(
+    total = n(),
+    na_count = sum(is.na(PAF)),
+    na_percent = (na_count / total) * 100
+  )
+  PAF_na$na <- 100 - PAF_na$na_percent
+   PAF_na <- PAF_na[c("Data_Type", "na")]
+  names(PAF_na)[2] <- "Data Completeness (%)"
+  PAF_na$Sensor <- "PAF_EH"
+  
+  #Merging together 
+  na <- rbind(PAF_na, PA_na)
+  na <- na %>% mutate(across(where(is.numeric), ~ round(., 2)))
+  table <- merge(table, na, by = c("Sensor", "Data_Type"), all.x = TRUE)
+  
+  #Formatting
+   table <- table %>% mutate(Sensor = case_when(table$Sensor == "PA_EH"	~ "PurpleAir Classic vs. Reference",
+                                                table$Sensor == "PAF_EH"	~ "PurpleAir Flex vs. Reference",
+                                                table$Sensor == "PAF_PA"	~ "PurpleAir Classic vs. PurpleAir Flex"))
+  
+  #Reformatting to my liking
+  table <- table[c("Sensor","Data_Type", "r_squared", "Slope", "Intercept", "RMSE", "Data Completeness (%)")]
+
+#This is saving a dataframe of the table, so the statistics can be pulled and compared to other sensors
+PurpleAir_RDS <- table[c("Data_Type", "r_squared", "Sensor")]
+saveRDS(PurpleAir_RDS, file="PurpleAir_RDS.rds")
+                                                      
+  table1 <- table |>
+  gt(
+    rowname_col = "Data_Type",
+     groupname_col = "Sensor")|>
+  cols_width(everything() ~ px(130)) |>
+  tab_header(
+    title = ("PurpleAir Sensor Analysis"),
+    subtitle = ("Sensor vs. Reference Correlations"))|>
+  cols_label(
+    r_squared = ("R\u00b2"),
+    Slope = ("Slope"),
+    Intercept = ("Y-Intercept"),
+    'Data Completeness (%)' = ("Completeness %"))|>
+cols_align(
+  align = ("center"),
+  columns = everything())|>
+sub_missing(
+  missing_text = "-")
+gtsave(table1, "table1.png")
+
+```
+
+# Results Summary
+```{r,fig.align = 'left', results='asis', echo = FALSE}
+knitr::include_graphics("table1.png")
+```
