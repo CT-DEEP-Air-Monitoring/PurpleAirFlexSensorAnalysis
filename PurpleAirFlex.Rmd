@@ -201,7 +201,9 @@ all_bind$EH <- as.numeric(all_bind$EH)
 all_bind$PA <- as.numeric(all_bind$PA)
 all_bind$PAF <- as.numeric(all_bind$PAF)
 
-
+#Truncating the values 
+all_bind$PA <- trunc(all_bind$PA * 10) / 10
+all_bind$PAF <- trunc(all_bind$PAF * 10) / 10
 ```
 
 ```{r csv link, echo=FALSE}
@@ -281,13 +283,17 @@ for (i in unique(all_bind$Quarter)){
 for (j in unique(i_all$Data_Type)){
   
   j_all <- subset(i_all, i_all$Data_Type==j)
+  j_all$Date_Time <- as.POSIXct(j_all$Date_Time)
   
    plot_name <- paste0("Q_", i, "_", j)
 
   timeseries[[plot_name]] <- plot_ly(data= j_all, x = ~Date_Time) %>%
-    add_lines(y = ~EH, name = "Reference", line = list(color = "black"), opacity = 0.9) %>%
-    add_lines(y = ~PA, name = "PurpleAir Classic", line = list(color = "darkgreen"), opacity = 0.6) %>%
-      add_lines(y = ~PAF, name = "PurpleAir Flex", line = list(color = "blue"), opacity = 0.5) %>%
+    add_lines(y = ~EH, name = "Reference", line = list(color = "black"), opacity = 0.9,
+    hoverinfo = 'text', text = ~paste0(format(Date_Time, "%m/%d/%y %H:%M"),"<br>","Reference: ", EH)) %>%
+    add_lines(y = ~PA, name = "PurpleAir Classic", line = list(color = "darkgreen"), opacity = 0.6,
+    hoverinfo = 'text', text = ~paste0(format(Date_Time, "%m/%d/%y %H:%M"),"<br>","PurpleAir Classic: ", PA)) %>%
+    add_lines(y = ~PAF, name = "PurpleAir Flex", line = list(color = "blue"), opacity = 0.5,
+    hoverinfo = 'text', text = ~paste0(format(Date_Time, "%m/%d/%y %H:%M"),"<br>","PurpleAir Flex: ", PAF)) %>%
     layout(title = list(text = paste0("PurpleAir Sensor: ", unique(j_all$Data_Type)," Comparision",
                                       "<br>",
                                       "<sup>", 
